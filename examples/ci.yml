@@ -1,0 +1,16 @@
+# Copia esto en tu proyecto como .github/workflows/ci.yml
+# Es TODO lo que el dev necesita escribir. La logica vive en ci-config-spira.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    uses: spira-mexico/ci-config-spira/.github/workflows/ci-node.yml@v1
+    secrets:
+      # Solo si instalas las reglas desde GitHub Packages o el repo es privado.
+      registry-token: ${{ secrets.GITHUB_TOKEN }}

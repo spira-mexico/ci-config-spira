@@ -1,0 +1,26 @@
+# Variante con opciones. Todos los inputs son opcionales.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    uses: spira-mexico/ci-config-spira/.github/workflows/ci-node.yml@v1
+    with:
+      node-version: '22'
+      working-directory: 'apps/web' # monorepo: carpeta del proyecto
+      framework: 'angular' # auto | react | angular | html | none
+      angular-prefix: 'spira' # prefijo de selectores
+      package-manager: 'pnpm' # auto | npm | yarn | pnpm
+      lint-paths: 'src'
+      max-warnings: 0 # los warnings tambien rompen el build
+      run-tests: true
+      build-command: 'pnpm run build:prod' # gana sobre la deteccion automatica
+      config-source: 'registry' # instalar las reglas desde GitHub Packages
+      config-version: '^1.0.0'
+    secrets:
+      registry-token: ${{ secrets.GITHUB_TOKEN }}

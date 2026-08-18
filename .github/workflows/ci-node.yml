@@ -1,0 +1,476 @@
+name: CI Spira (reutilizable)
+
+# Workflow reutilizable de Spira Mexico.
+# El dev no lo edita: solo lo llama desde su repo con `uses:`.
+#
+#   jobs:
+#     ci:
+#       uses: spira-mexico/ci-config-spira/.github/workflows/ci-node.yml@v1
+#
+# Aqui vive toda la logica pesada: instalar dependencias, correr ESLint con las
+# reglas compartidas, detectar el framework y correr el build correcto.
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Version de Node.js'
+        type: string
+        default: '22'
+      working-directory:
+        description: 'Carpeta del proyecto dentro del repo'
+        type: string
+        default: '.'
+      package-manager:
+        description: 'auto | npm | yarn | pnpm'
+        type: string
+        default: 'auto'
+      framework:
+        description: 'auto | react | angular | html | none'
+        type: string
+        default: 'auto'
+      lint-paths:
+        description: 'Rutas que revisa ESLint'
+        type: string
+        default: '.'
+      max-warnings:
+        description: 'Maximo de warnings tolerados (-1 = sin limite)'
+        type: number
+        default: -1
+      run-lint:
+        description: 'Correr ESLint'
+        type: boolean
+        default: true
+      run-build:
+        description: 'Correr el build del proyecto'
+        type: boolean
+        default: true
+      run-tests:
+        description: 'Correr el script `test` si existe'
+        type: boolean
+        default: false
+      build-command:
+        description: 'Comando de build explicito (vacio = se detecta solo)'
+        type: string
+        default: ''
+      config-source:
+        description: 'De donde sale @spira-mexico/eslint-config: git | registry'
+        type: string
+        default: 'git'
+      config-version:
+        description: 'Tag/branch (git) o version semver (registry) de la config'
+        type: string
+        default: 'v1'
+      angular-prefix:
+        description: 'Prefijo de selectores para proyectos Angular'
+        type: string
+        default: 'app'
+      runs-on:
+        description: 'Runner de GitHub Actions'
+        type: string
+        default: 'ubuntu-latest'
+    secrets:
+      registry-token:
+        description: 'Token con read:packages (solo si config-source = registry)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Lint y build
+    runs-on: ${{ inputs.runs-on }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout del repo del dev
+        uses: actions/checkout@v4
+
+      - name: Detectar gestor de paquetes
+        id: pm
+        run: |
+          set -euo pipefail
+          elegido="${{ inputs.package-manager }}"
+
+          if [ "$elegido" = "auto" ]; then
+            if   [ -f pnpm-lock.yaml ];      then elegido="pnpm"
+            elif [ -f yarn.lock ];           then elegido="yarn"
+            else                                  elegido="npm"
+            fi
+          fi
+
+          case "$elegido" in
+            pnpm) lockfile="pnpm-lock.yaml" ;;
+            yarn) lockfile="yarn.lock" ;;
+            *)    lockfile="package-lock.json" ;;
+          esac
+
+          if [ -f "$lockfile" ]; then hay_lock="true"; else hay_lock="false"; fi
+
+          echo "manager=$elegido"   >> "$GITHUB_OUTPUT"
+          echo "lockfile=$lockfile" >> "$GITHUB_OUTPUT"
+          echo "has-lock=$hay_lock" >> "$GITHUB_OUTPUT"
+          echo "Gestor: $elegido (lockfile presente: $hay_lock)"
+
+      - name: Instalar pnpm
+        if: steps.pm.outputs.manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Preparar Node.js (con cache)
+        if: steps.pm.outputs.has-lock == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@spira-mexico'
+          cache: ${{ steps.pm.outputs.manager }}
+          cache-dependency-path: ${{ inputs.working-directory }}/${{ steps.pm.outputs.lockfile }}
+
+      - name: Preparar Node.js (sin lockfile, sin cache)
+        if: steps.pm.outputs.has-lock != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@spira-mexico'
+
+      - name: Instalar dependencias del proyecto
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.registry-token }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f package.json ]; then
+            echo "Sin package.json: proyecto estatico, no hay dependencias que instalar."
+            exit 0
+          fi
+
+          case "${{ steps.pm.outputs.manager }}" in
+            pnpm)
+              if [ "${{ steps.pm.outputs.has-lock }}" = "true" ]; then
+                pnpm install --frozen-lockfile
+              else
+                pnpm install --no-frozen-lockfile
+              fi
+              ;;
+            yarn)
+              if [ "${{ steps.pm.outputs.has-lock }}" = "true" ]; then
+                yarn install --frozen-lockfile
+              else
+                yarn install
+              fi
+              ;;
+            *)
+              if [ "${{ steps.pm.outputs.has-lock }}" = "true" ]; then
+                npm ci
+              else
+                npm install --no-audit --no-fund
+              fi
+              ;;
+          esac
+
+      - name: Detectar framework
+        id: detect
+        run: |
+          set -euo pipefail
+          elegido="${{ inputs.framework }}"
+
+          if [ "$elegido" = "auto" ]; then
+            if [ -f package.json ]; then
+              elegido="$(node -e '
+                const fs = require("node:fs");
+                const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+                const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+                if (deps["@angular/core"]) { console.log("angular"); }
+                else if (deps.react || deps["react-dom"] || deps.next) { console.log("react"); }
+                else { console.log("html"); }
+              ')"
+            else
+              elegido="html"
+            fi
+          fi
+
+          echo "framework=$elegido" >> "$GITHUB_OUTPUT"
+          echo "Framework detectado: $elegido"
+
+      - name: Asegurar ESLint y la config compartida
+        id: eslint-setup
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.registry-token }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ inputs.config-source }}" = "registry" ]; then
+            spec_config="@spira-mexico/eslint-config@${{ inputs.config-version }}"
+          else
+            spec_config="github:spira-mexico/ci-config-spira#${{ inputs.config-version }}"
+
+            # Si el repo de la config es privado, npm necesita credenciales para el clone.
+            if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+              git config --global \
+                url."https://x-access-token:${NODE_AUTH_TOKEN}@github.com/".insteadOf \
+                "https://github.com/"
+            fi
+          fi
+
+          # El proyecto puede no tener package.json (sitio estatico puro).
+          if [ ! -f package.json ]; then
+            echo '{"name":"proyecto-estatico","private":true}' > package.json
+            echo "package-temporal=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          hay() {
+            node -e "require.resolve('$1/package.json', { paths: [process.cwd()] })" 2>/dev/null
+          }
+
+          # Se instala con --save-dev, no con --no-save: un segundo
+          # `npm install --no-save` poda lo que instalo el primero y las reglas
+          # desaparecian antes de usarse. El checkout de CI es desechable, asi
+          # que tocar su package.json no afecta al repo del dev.
+
+          # 1. Las reglas primero: npm resuelve solo su peer de ESLint, asi que
+          #    la version compatible la manda el paquete, no este workflow.
+          if hay "@spira-mexico/eslint-config"; then
+            echo "El proyecto ya trae las reglas de Spira."
+          else
+            echo "Instalando las reglas de Spira: $spec_config"
+            npm install --save-dev --no-audit --no-fund "$spec_config"
+          fi
+
+          # 2. Si sigue sin ESLint, se instala el rango que piden las reglas.
+          #    Nunca "eslint" a secas: bajaria la ultima major y hay plugins que
+          #    todavia no la soportan (el lint se cae con un error ilegible).
+          if hay "eslint"; then
+            echo "El proyecto ya trae ESLint."
+          else
+            rango="$(node -p "require('@spira-mexico/eslint-config/package.json').peerDependencies.eslint")"
+            echo "Instalando eslint@$rango (rango que piden las reglas)."
+            npm install --save-dev --no-audit --no-fund "eslint@$rango"
+          fi
+
+          version_eslint="$(npx --no-install eslint --version 2>/dev/null || echo 'desconocida')"
+          echo "eslint-version=$version_eslint" >> "$GITHUB_OUTPUT"
+          echo "ESLint en uso: $version_eslint"
+
+      - name: Asegurar archivo de configuracion de ESLint
+        id: eslint-config
+        run: |
+          set -euo pipefail
+          propio="false"
+
+          for archivo in eslint.config.js eslint.config.mjs eslint.config.cjs eslint.config.ts; do
+            if [ -f "$archivo" ]; then propio="true"; break; fi
+          done
+
+          if [ "$propio" = "true" ]; then
+            echo "Usando la config del proyecto: $archivo"
+            echo "config-file=$archivo" >> "$GITHUB_OUTPUT"
+          else
+            cat > eslint.config.spira.mjs <<'CONFIG'
+          import { spiraConfig } from '@spira-mexico/eslint-config';
+
+          export default spiraConfig({
+            framework: process.env.SPIRA_FRAMEWORK || 'auto',
+            angularPrefix: process.env.SPIRA_ANGULAR_PREFIX || 'app',
+          });
+          CONFIG
+            echo "El proyecto no trae config propia: se genero eslint.config.spira.mjs"
+            echo "config-file=eslint.config.spira.mjs" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: ESLint (reglas de Spira)
+        id: lint
+        if: inputs.run-lint
+        env:
+          SPIRA_FRAMEWORK: ${{ steps.detect.outputs.framework }}
+          SPIRA_ANGULAR_PREFIX: ${{ inputs.angular-prefix }}
+        run: |
+          set -uo pipefail
+
+          # ESLint sale con 1 cuando encuentra errores: el veredicto lo da el
+          # siguiente paso, que ademas publica anotaciones y resumen.
+          npx --no-install eslint ${{ inputs.lint-paths }} \
+            --config "${{ steps.eslint-config.outputs.config-file }}" \
+            --no-config-lookup \
+            --format json \
+            --output-file eslint-report.json || true
+
+      - name: Reporte de ESLint
+        if: ${{ always() && inputs.run-lint && steps.lint.outcome != 'skipped' }}
+        env:
+          MAX_WARNINGS: ${{ inputs.max-warnings }}
+        run: |
+          set -euo pipefail
+
+          # El reporteador va en un archivo, no en `node -e`: anidar JavaScript
+          # dentro de bash dentro de YAML es justo donde se rompen las comillas.
+          cat > .spira-reporte.cjs <<'REPORTE'
+          const fs = require("node:fs");
+          const os = require("node:os");
+          const path = require("node:path");
+
+          const SALTO = os.EOL;
+          const REPORTE = "eslint-report.json";
+
+          if (!fs.existsSync(REPORTE)) {
+            console.log("ESLint no genero reporte: probablemente fallo antes de revisar.");
+            process.exit(1);
+          }
+
+          const resultados = JSON.parse(fs.readFileSync(REPORTE, "utf8"));
+          const maxWarnings = Number(process.env.MAX_WARNINGS ?? -1);
+
+          let errores = 0;
+          let warnings = 0;
+          const porRegla = new Map();
+          const filas = [];
+
+          for (const archivo of resultados) {
+            // Ruta relativa y con separadores de URL, que es como las quiere GitHub.
+            const relativo = path
+              .relative(process.cwd(), archivo.filePath)
+              .split(path.sep)
+              .join("/");
+
+            for (const problema of archivo.messages) {
+              const esError = problema.severity === 2;
+              if (esError) { errores += 1; } else { warnings += 1; }
+
+              const regla = problema.ruleId ?? "(error de sintaxis)";
+              porRegla.set(regla, (porRegla.get(regla) ?? 0) + 1);
+
+              const tipo = esError ? "error" : "warning";
+              const linea = problema.line ?? 1;
+              const columna = problema.column ?? 1;
+              const mensaje = problema.message.split(SALTO)[0];
+
+              // Anotacion inline: aparece sobre la linea exacta en el diff del PR.
+              console.log(
+                "::" + tipo + " file=" + relativo + ",line=" + linea + ",col=" + columna +
+                  ",title=" + regla + "::" + mensaje,
+              );
+
+              filas.push("| `" + relativo + ":" + linea + "` | " + tipo + " | `" + regla + "` | " + mensaje + " |");
+            }
+          }
+
+          const resumen = [];
+          resumen.push("## ESLint — reglas de Spira", "");
+          resumen.push(
+            "**" + errores + " errores · " + warnings + " warnings** en " +
+              resultados.length + " archivos revisados.",
+            "",
+          );
+
+          if (porRegla.size > 0) {
+            resumen.push("### Reglas mas repetidas", "", "| Regla | Veces |", "| --- | ---: |");
+            for (const [regla, veces] of [...porRegla.entries()].sort((una, otra) => otra[1] - una[1]).slice(0, 10)) {
+              resumen.push("| `" + regla + "` | " + veces + " |");
+            }
+            resumen.push("");
+          }
+
+          if (filas.length > 0) {
+            resumen.push("<details><summary>Ver los primeros 50 problemas</summary>", "");
+            resumen.push("| Archivo | Tipo | Regla | Mensaje |", "| --- | --- | --- | --- |");
+            resumen.push(...filas.slice(0, 50));
+            resumen.push("", "</details>");
+          } else {
+            resumen.push("Sin problemas. Todo limpio.");
+          }
+
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, resumen.join(SALTO) + SALTO);
+          console.log(SALTO + "ESLint: " + errores + " errores, " + warnings + " warnings.");
+
+          if (errores > 0) {
+            console.error("Hay errores de lint: revisa las anotaciones del PR.");
+            process.exit(1);
+          }
+          if (maxWarnings >= 0 && warnings > maxWarnings) {
+            console.error("Hay " + warnings + " warnings y el maximo permitido es " + maxWarnings + ".");
+            process.exit(1);
+          }
+          REPORTE
+
+          # Con `set -e` hay que capturar el codigo antes de limpiar el archivo.
+          codigo=0
+          node .spira-reporte.cjs || codigo=$?
+          rm -f .spira-reporte.cjs
+          exit $codigo
+
+      - name: Guardar reporte de ESLint
+        if: always() && hashFiles(format('{0}/eslint-report.json', inputs.working-directory)) != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eslint-report-${{ github.job }}-${{ github.run_attempt }}
+          path: ${{ inputs.working-directory }}/eslint-report.json
+          retention-days: 7
+
+      - name: Tests del proyecto
+        if: inputs.run-tests
+        run: |
+          set -euo pipefail
+
+          if node -e 'process.exit(require("./package.json").scripts?.test ? 0 : 1)' 2>/dev/null; then
+            ${{ steps.pm.outputs.manager }} run test
+          else
+            echo "El proyecto no tiene script \`test\`: nada que correr."
+          fi
+
+      - name: Build
+        if: inputs.run-build
+        env:
+          CI: 'true'
+          NODE_ENV: 'production'
+        run: |
+          set -euo pipefail
+
+          comando="${{ inputs.build-command }}"
+          gestor="${{ steps.pm.outputs.manager }}"
+          framework="${{ steps.detect.outputs.framework }}"
+
+          if [ -n "$comando" ]; then
+            echo "Build explicito: $comando"
+            eval "$comando"
+            exit 0
+          fi
+
+          tiene_script_build="false"
+          if [ -f package.json ]; then
+            node -e 'process.exit(require("./package.json").scripts?.build ? 0 : 1)' 2>/dev/null \
+              && tiene_script_build="true"
+          fi
+
+          if [ "$tiene_script_build" = "true" ]; then
+            echo "Build via script del proyecto ($framework)."
+            "$gestor" run build
+          elif [ "$framework" = "angular" ]; then
+            echo "Angular sin script build: usando ng build."
+            npx --no-install ng build --configuration production
+          elif [ "$framework" = "html" ]; then
+            echo "Sitio estatico sin script build: no hay nada que compilar."
+          else
+            echo "::warning::No se encontro script \`build\` para el framework $framework."
+          fi
+
+      - name: Resumen del run
+        if: always()
+        run: |
+          {
+            echo "## Resumen"
+            echo ""
+            echo "| Dato | Valor |"
+            echo "| --- | --- |"
+            echo "| Framework | \`${{ steps.detect.outputs.framework }}\` |"
+            echo "| Gestor de paquetes | \`${{ steps.pm.outputs.manager }}\` |"
+            echo "| Node.js | \`${{ inputs.node-version }}\` |"
+            echo "| ESLint | \`${{ steps.eslint-setup.outputs.eslint-version }}\` |"
+            echo "| Config de ESLint | \`${{ steps.eslint-config.outputs.config-file }}\` |"
+            echo "| Origen de las reglas | \`${{ inputs.config-source }}@${{ inputs.config-version }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

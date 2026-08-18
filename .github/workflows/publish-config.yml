@@ -1,0 +1,81 @@
+name: Publicar @spira-mexico/eslint-config
+
+# Publica el paquete de reglas en GitHub Packages (registro privado de la org).
+# Se dispara al publicar un release, o a mano desde la pestana Actions.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Solo simular la publicacion'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publicar:
+    name: Publicar en GitHub Packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@spira-mexico'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci --no-audit --no-fund
+
+      - name: Verificar reglas (lint + tests)
+        run: |
+          npm run lint
+          npm test
+
+      - name: Verificar que la version coincide con el tag
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          version_pkg="$(node -p "require('./package.json').version")"
+          version_tag="${GITHUB_REF_NAME#v}"
+
+          if [ "$version_pkg" != "$version_tag" ]; then
+            echo "::error::package.json dice $version_pkg pero el tag es $version_tag."
+            exit 1
+          fi
+          echo "Version $version_pkg lista para publicar."
+
+      - name: Publicar
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            npm publish --dry-run
+          else
+            npm publish
+          fi
+
+      - name: Mover el tag mayor (v1)
+        if: github.event_name == 'release' && !github.event.release.prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mayor="v$(node -p "require('./package.json').version.split('.')[0]")"
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag -f "$mayor"
+          git push -f origin "$mayor"
+
+          echo "Tag $mayor ahora apunta a $GITHUB_REF_NAME (los repos que usan @$mayor ya traen los cambios)."

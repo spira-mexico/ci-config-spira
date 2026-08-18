@@ -1,0 +1,41 @@
+name: Revisar este repo
+
+# El repo de reglas se revisa con sus propias reglas y corre los tests que
+# comprueban que cada regla sigue disparando.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  revisar:
+    name: Lint y tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: ESLint sobre este repo
+        run: npm run lint
+
+      - name: Tests de las reglas
+        run: npm test
+
+      - name: Verificar que el paquete se empaqueta bien
+        run: npm pack --dry-run

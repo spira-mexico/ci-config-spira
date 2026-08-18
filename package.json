@@ -1,0 +1,64 @@
+{
+  "name": "@spira-mexico/eslint-config",
+  "version": "1.0.0",
+  "description": "Configuracion de ESLint compartida de Spira Mexico + workflow de CI reutilizable.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./base": "./configs/base.js",
+    "./typescript": "./configs/typescript.js",
+    "./react": "./configs/react.js",
+    "./angular": "./configs/angular.js",
+    "./html": "./configs/html.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "configs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spira-mexico/ci-config-spira.git"
+  },
+  "homepage": "https://github.com/spira-mexico/ci-config-spira#readme",
+  "bugs": {
+    "url": "https://github.com/spira-mexico/ci-config-spira/issues"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "keywords": [
+    "eslint",
+    "eslintconfig",
+    "spira",
+    "ci"
+  ],
+  "scripts": {
+    "lint": "eslint .",
+    "test": "node --test test/reglas.test.js"
+  },
+  "peerDependencies": {
+    "eslint": "^9.7.0"
+  },
+  "dependencies": {
+    "@eslint/js": "^9.39.0",
+    "@html-eslint/eslint-plugin": "^0.65.0",
+    "@html-eslint/parser": "^0.65.0",
+    "angular-eslint": "^22.1.0",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-unused-imports": "^4.4.1",
+    "globals": "^17.11.0",
+    "typescript-eslint": "^8.67.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.0"
+  }
+}
